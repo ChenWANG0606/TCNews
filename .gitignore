@@ -1,0 +1,42 @@
+# =========================
+# Python 常见忽略
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 日志
+*.log
+
+# 编译/构建
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 测试/缓存
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# IDE
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+
+# =========================
+# 项目自定义
+# =========================
+tcdata/
+temp_results/
+
