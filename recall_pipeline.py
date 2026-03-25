@@ -13,6 +13,7 @@ from metrics import metrics_recall
 from models.CF import item_based_recommend, itemcf_sim, user_based_recommend
 from models.DNN import TorchYoutubeDNN, YoutubeDNNTrainer, u2u_embdding_sim
 from models.VectorSim import embdding_sim
+from utils.submit_utils import submit
 from utils.data_utils import (
     bucketize_words_count,
     gen_data_set,
@@ -128,6 +129,36 @@ def save_pickle(obj, save_path, filename):
     ensure_dir(save_path)
     with open(os.path.join(save_path, filename), "wb") as file_obj:
         pickle.dump(obj, file_obj)
+
+
+def recall_dict_to_df(recall_items_dict):
+    user_item_score_list = []
+    for user, items in recall_items_dict.items():
+        for item, score in items:
+            user_item_score_list.append([user, item, score])
+    return pd.DataFrame(user_item_score_list, columns=["user_id", "click_article_id", "pred_score"])
+
+
+def generate_submission_from_recall_dict(
+    recall_items_dict,
+    data_path="./tcdata/",
+    save_path="./temp_results/",
+    topk=5,
+    model_name="multi_recall",
+):
+    log_step("Preparing submission data from test users")
+    tst_click = pd.read_csv(os.path.join(data_path, "testA_click_log.csv"))
+    tst_users = tst_click["user_id"].unique()
+    recall_df = recall_dict_to_df(recall_items_dict)
+    tst_recall = recall_df[recall_df["user_id"].isin(tst_users)].copy()
+    log_step(
+        "Submission candidate data ready: "
+        f"test_users={len(tst_users)}, "
+        f"recall_rows={len(tst_recall)}"
+    )
+    submit(tst_recall, topk=topk, save_path=save_path, model_name=model_name)
+    log_step(f"Submission file generated in {save_path} with model_name={model_name}")
+    return tst_recall
 
 
 def run_itemcf_recall(click_df, item_created_time_dict, emb_i2i_sim, save_path, sim_item_topk=20, recall_item_num=10):
@@ -416,6 +447,9 @@ def run_multi_recall(
     weight_dict=None,
     use_sample=False,
     sample_nums=10000,
+    generate_submit=False,
+    submit_topk=5,
+    submit_model_name="multi_recall",
 ):
     enable_methods = set(enable_methods or RECALL_METHODS)
     log_step("Multi-recall pipeline started")
@@ -504,6 +538,15 @@ def run_multi_recall(
         save_path=save_path,
     )
 
+    if generate_submit:
+        generate_submission_from_recall_dict(
+            final_recall_items_dict,
+            data_path=data_path,
+            save_path=save_path,
+            topk=submit_topk,
+            model_name=submit_model_name,
+        )
+
     log_step("Multi-recall pipeline finished")
     return user_multi_recall_dict, final_recall_items_dict
 
@@ -516,6 +559,9 @@ def parse_args():
     parser.add_argument("--use-sample", type=str2bool, default=False, help="Use get_all_click_sample instead of get_all_click_df")
     parser.add_argument("--sample-nums", type=int, default=10000, help="Sample user count when --use-sample is enabled")
     parser.add_argument("--metric-recall", type=str2bool, default=True, help="Enable offline recall metrics")
+    parser.add_argument("--generate-submit", type=str2bool, default=False, help="Generate submission csv for test users")
+    parser.add_argument("--submit-topk", type=int, default=5, help="Submission topk")
+    parser.add_argument("--submit-model-name", default="multi_recall", help="Submission file prefix")
     parser.add_argument(
         "--methods",
         nargs="*",
@@ -536,4 +582,7 @@ if __name__ == "__main__":
         enable_methods=args.methods,
         use_sample=args.use_sample,
         sample_nums=args.sample_nums,
+        generate_submit=args.generate_submit,
+        submit_topk=args.submit_topk,
+        submit_model_name=args.submit_model_name,
     )

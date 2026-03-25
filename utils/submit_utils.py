@@ -1,4 +1,7 @@
 import pandas as pd
+from datetime import datetime
+
+
 # 生成提交文件
 def submit(recall_df, topk=5, save_path = './', model_name=None):
     recall_df = recall_df.sort_values(by=['user_id', 'pred_score'])
@@ -18,4 +21,3 @@ def submit(recall_df, topk=5, save_path = './', model_name=None):
     
     save_name = save_path + model_name + '_' + datetime.today().strftime('%m-%d') + '.csv'
     submit.to_csv(save_name, index=False, header=True)
-
