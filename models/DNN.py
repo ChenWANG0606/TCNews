@@ -11,50 +11,107 @@ class TorchYoutubeDNN(nn.Module):
     - user tower: user_id embedding + 历史序列平均池化 + MLP
     - item tower: item_id embedding
     """
-    def __init__(self, user_num, item_num, embedding_dim=16, hidden_units=(64, 16), padding_idx=0):
+    def __init__(
+        self,
+        user_num,
+        item_num,
+        embedding_dim=16,
+        hidden_units=(64, 16),
+        padding_idx=0,
+        category_num=None,
+        words_num=None,
+        item_hidden_units=None
+    ):
         super().__init__()
         self.embedding_dim = embedding_dim
+        self.use_category = category_num is not None
+        self.use_words = words_num is not None
 
         self.user_embedding = nn.Embedding(user_num, embedding_dim)
         self.item_embedding = nn.Embedding(item_num, embedding_dim, padding_idx=padding_idx)
-        self.hist_embedding = self.item_embedding  # 与 item embedding 共享参数
+        if self.use_category:
+            self.category_embedding = nn.Embedding(category_num, embedding_dim, padding_idx=padding_idx)
+        else:
+            self.category_embedding = None
+        if self.use_words:
+            self.words_embedding = nn.Embedding(words_num, embedding_dim, padding_idx=padding_idx)
+        else:
+            self.words_embedding = None
+
+        self.item_input_dim = embedding_dim
+        if self.use_category:
+            self.item_input_dim += embedding_dim
+        if self.use_words:
+            self.item_input_dim += embedding_dim
+
+        item_hidden_units = item_hidden_units or hidden_units
+        item_layers = []
+        item_input_dim = self.item_input_dim
+        for h in item_hidden_units:
+            item_layers.append(nn.Linear(item_input_dim, h))
+            item_layers.append(nn.ReLU())
+            item_input_dim = h
+        self.item_mlp = nn.Sequential(*item_layers)
 
         layers = []
-        input_dim = embedding_dim * 2
+        input_dim = embedding_dim + self.item_input_dim
         for h in hidden_units:
             layers.append(nn.Linear(input_dim, h))
             layers.append(nn.ReLU())
             input_dim = h
         self.user_mlp = nn.Sequential(*layers)
 
-    def encode_user(self, user_id, hist_item, hist_len):
+    def _build_item_features(self, item_id, category_id=None, words_id=None):
+        item_features = [self.item_embedding(item_id)]
+        if self.use_category:
+            if category_id is None:
+                raise ValueError("category_id 不能为空")
+            item_features.append(self.category_embedding(category_id))
+        if self.use_words:
+            if words_id is None:
+                raise ValueError("words_id 不能为空")
+            item_features.append(self.words_embedding(words_id))
+        return torch.cat(item_features, dim=-1)
+
+    def encode_user(self, user_id, hist_item, hist_len, hist_category=None, hist_words=None):
         """
         user_id: [B]
         hist_item: [B, L]
         hist_len: [B]
         """
         user_emb = self.user_embedding(user_id)  # [B, D]
-        hist_emb = self.hist_embedding(hist_item)  # [B, L, D]
+        hist_emb = self._build_item_features(hist_item, hist_category, hist_words)  # [B, L, D_item]
 
         mask = (hist_item != 0).float().unsqueeze(-1)  # [B, L, 1]
         # 进行平均
-        hist_sum = (hist_emb * mask).sum(dim=1)        # [B, D]
+        hist_sum = (hist_emb * mask).sum(dim=1)        # [B, D_item]
         denom = hist_len.clamp(min=1).float().unsqueeze(-1)
-        hist_mean = hist_sum / denom                   # [B, D]
+        hist_mean = hist_sum / denom                   # [B, D_item]
 
-        user_input = torch.cat([user_emb, hist_mean], dim=-1)  # [B, 2D]
+        user_input = torch.cat([user_emb, hist_mean], dim=-1)  # [B, D + D_item]
         user_vec = self.user_mlp(user_input)                   # [B, D_last]
         user_vec = F.normalize(user_vec, p=2, dim=-1)
         return user_vec
 
-    def encode_item(self, item_id):
-        item_vec = self.item_embedding(item_id)
+    def encode_item(self, item_id, category_id=None, words_id=None):
+        item_input = self._build_item_features(item_id, category_id, words_id)
+        item_vec = self.item_mlp(item_input)
         item_vec = F.normalize(item_vec, p=2, dim=-1)
         return item_vec
 
-    def forward(self, user_id, hist_item, hist_len, target_item):
-        user_vec = self.encode_user(user_id, hist_item, hist_len)
-        item_vec = self.encode_item(target_item)
+    def forward(
+        self,
+        user_id,
+        hist_item,
+        hist_len,
+        target_item,
+        hist_category=None,
+        hist_words=None,
+        target_category=None,
+        target_words=None
+    ):
+        user_vec = self.encode_user(user_id, hist_item, hist_len, hist_category, hist_words)
+        item_vec = self.encode_item(target_item, target_category, target_words)
         return user_vec, item_vec
 
 class YoutubeDNNTrainer:
@@ -80,6 +137,10 @@ class YoutubeDNNTrainer:
         item_id = torch.LongTensor(train_model_input["click_article_id"])
         hist_id = torch.LongTensor(train_model_input["hist_article_id"])
         hist_len = torch.LongTensor(train_model_input["hist_len"])
+        item_category = torch.LongTensor(train_model_input["item_category_id"]) if "item_category_id" in train_model_input else None
+        item_words = torch.LongTensor(train_model_input["item_words_count"]) if "item_words_count" in train_model_input else None
+        hist_category = torch.LongTensor(train_model_input["hist_category_id"]) if "hist_category_id" in train_model_input else None
+        hist_words = torch.LongTensor(train_model_input["hist_words_count"]) if "hist_words_count" in train_model_input else None
 
         num_samples = len(user_id)
 
@@ -96,9 +157,20 @@ class YoutubeDNNTrainer:
                 batch_item = item_id[idx].to(self.device)
                 batch_hist = hist_id[idx].to(self.device)
                 batch_hist_len = hist_len[idx].to(self.device)
+                batch_item_category = item_category[idx].to(self.device) if item_category is not None else None
+                batch_item_words = item_words[idx].to(self.device) if item_words is not None else None
+                batch_hist_category = hist_category[idx].to(self.device) if hist_category is not None else None
+                batch_hist_words = hist_words[idx].to(self.device) if hist_words is not None else None
 
                 user_vec, item_vec = self.model(
-                    batch_user, batch_hist, batch_hist_len, batch_item
+                    batch_user,
+                    batch_hist,
+                    batch_hist_len,
+                    batch_item,
+                    batch_hist_category,
+                    batch_hist_words,
+                    batch_item_category,
+                    batch_item_words
                 )
 
                 # in-batch negative
@@ -121,6 +193,8 @@ class YoutubeDNNTrainer:
         user_id = torch.LongTensor(test_model_input["user_id"]).to(self.device)
         hist_id = torch.LongTensor(test_model_input["hist_article_id"]).to(self.device)
         hist_len = torch.LongTensor(test_model_input["hist_len"]).to(self.device)
+        hist_category = torch.LongTensor(test_model_input["hist_category_id"]).to(self.device) if "hist_category_id" in test_model_input else None
+        hist_words = torch.LongTensor(test_model_input["hist_words_count"]).to(self.device) if "hist_words_count" in test_model_input else None
 
         user_embs = []
 
@@ -129,22 +203,34 @@ class YoutubeDNNTrainer:
                 batch_user = user_id[i:i+2**12]
                 batch_hist = hist_id[i:i+2**12]
                 batch_hist_len = hist_len[i:i+2**12]
+                batch_hist_category = hist_category[i:i+2**12] if hist_category is not None else None
+                batch_hist_words = hist_words[i:i+2**12] if hist_words is not None else None
 
-                emb = self.model.encode_user(batch_user, batch_hist, batch_hist_len)
+                emb = self.model.encode_user(
+                    batch_user,
+                    batch_hist,
+                    batch_hist_len,
+                    batch_hist_category,
+                    batch_hist_words
+                )
                 user_embs.append(emb.cpu().numpy())
 
         return np.vstack(user_embs)
 
-    def get_item_embedding(self, item_ids):
+    def get_item_embedding(self, item_ids, item_category_ids=None, item_words_ids=None):
         self.model.eval()
 
         item_ids = torch.LongTensor(item_ids).to(self.device)
+        item_category_ids = torch.LongTensor(item_category_ids).to(self.device) if item_category_ids is not None else None
+        item_words_ids = torch.LongTensor(item_words_ids).to(self.device) if item_words_ids is not None else None
         item_embs = []
 
         with torch.no_grad():
             for i in range(0, len(item_ids), 2**12):
                 batch_item = item_ids[i:i+2**12]
-                emb = self.model.encode_item(batch_item)
+                batch_item_category = item_category_ids[i:i+2**12] if item_category_ids is not None else None
+                batch_item_words = item_words_ids[i:i+2**12] if item_words_ids is not None else None
+                emb = self.model.encode_item(batch_item, batch_item_category, batch_item_words)
                 item_embs.append(emb.cpu().numpy())
 
         return np.vstack(item_embs)

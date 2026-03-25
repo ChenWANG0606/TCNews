@@ -100,6 +100,16 @@ def get_item_info_dict(item_info_df):
     
     return item_type_dict, item_words_dict, item_created_time_dict
 
+
+def bucketize_words_count(words_count_series, bucket_num=20):
+    words_count_series = words_count_series.fillna(0)
+    bucket_num = min(bucket_num, words_count_series.nunique())
+    if bucket_num <= 1:
+        return pd.Series(np.ones(len(words_count_series), dtype=np.int64), index=words_count_series.index)
+
+    words_bucket = pd.qcut(words_count_series, q=bucket_num, duplicates='drop', labels=False)
+    return words_bucket.fillna(0).astype(np.int64)
+
     
 # 获取当前数据的历史点击和最后一次点击
 
@@ -211,7 +221,7 @@ def gen_data_set(data, negsample=0):
     return train_set, test_set
 
 # 将输入的数据进行padding，使得序列特征的长度都一致
-def gen_model_input(train_set,user_profile,seq_max_len):
+def gen_model_input(train_set, user_profile, seq_max_len, item_feat_dict=None):
 
     train_uid = np.array([line[0] for line in train_set])
     train_seq = [line[1] for line in train_set]
@@ -222,5 +232,28 @@ def gen_model_input(train_set,user_profile,seq_max_len):
     train_seq_pad = pad_sequences(train_seq, maxlen=seq_max_len, padding='post', truncating='post', value=0)
     train_model_input = {"user_id": train_uid, "click_article_id": train_iid, "hist_article_id": train_seq_pad,
                          "hist_len": train_hist_len}
+
+    if item_feat_dict is not None:
+        if "category_id" in item_feat_dict:
+            category_map = item_feat_dict["category_id"]
+            train_model_input["item_category_id"] = np.array(
+                [category_map.get(item_id, 0) for item_id in train_iid],
+                dtype=np.int64
+            )
+            train_model_input["hist_category_id"] = np.vectorize(
+                lambda x: category_map.get(x, 0),
+                otypes=[np.int64]
+            )(train_seq_pad)
+
+        if "words_count" in item_feat_dict:
+            words_map = item_feat_dict["words_count"]
+            train_model_input["item_words_count"] = np.array(
+                [words_map.get(item_id, 0) for item_id in train_iid],
+                dtype=np.int64
+            )
+            train_model_input["hist_words_count"] = np.vectorize(
+                lambda x: words_map.get(x, 0),
+                otypes=[np.int64]
+            )(train_seq_pad)
 
     return train_model_input, train_label
