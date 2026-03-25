@@ -11,7 +11,18 @@ class TorchYoutubeDNN(nn.Module):
     - user tower: user_id embedding + 历史序列平均池化 + MLP
     - item tower: item_id embedding
     """
-    def __init__(self, user_num, item_num, embedding_dim=16, hidden_units=(64, 16), padding_idx=0):
+    def __init__(
+        self,
+        user_num,
+        item_num,
+        embedding_dim=16,
+        hidden_units=(64, 16),
+        padding_idx=0,
+        item_content_emb=None,
+        item_content_dim=None,
+        content_proj_dim=None,
+        freeze_content_emb=True
+    ):
         super().__init__()
         self.embedding_dim = embedding_dim
 
@@ -19,13 +30,43 @@ class TorchYoutubeDNN(nn.Module):
         self.item_embedding = nn.Embedding(item_num, embedding_dim, padding_idx=padding_idx)
         self.hist_embedding = self.item_embedding  # 与 item embedding 共享参数
 
+        self.use_item_content = item_content_emb is not None
+        if self.use_item_content:
+            item_content_emb = torch.as_tensor(item_content_emb, dtype=torch.float32)
+            self.item_content_embedding = nn.Embedding.from_pretrained(
+                item_content_emb,
+                freeze=freeze_content_emb,
+                padding_idx=padding_idx
+            )
+            raw_content_dim = item_content_emb.shape[1]
+            if item_content_dim is not None and item_content_dim != raw_content_dim:
+                raise ValueError(
+                    f"item_content_dim={item_content_dim} 与 item_content_emb.shape[1]={raw_content_dim} 不一致"
+                )
+            content_proj_dim = content_proj_dim or embedding_dim
+            self.content_proj = nn.Linear(raw_content_dim, content_proj_dim)
+            self.item_input_dim = embedding_dim + content_proj_dim
+        else:
+            self.item_content_embedding = None
+            self.content_proj = None
+            self.item_input_dim = embedding_dim
+
         layers = []
-        input_dim = embedding_dim * 2
+        input_dim = embedding_dim + self.item_input_dim
         for h in hidden_units:
             layers.append(nn.Linear(input_dim, h))
             layers.append(nn.ReLU())
             input_dim = h
         self.user_mlp = nn.Sequential(*layers)
+
+    def _encode_item_features(self, item_id):
+        item_id_vec = self.item_embedding(item_id)
+        if not self.use_item_content:
+            return item_id_vec
+
+        item_content_vec = self.item_content_embedding(item_id)
+        item_content_vec = self.content_proj(item_content_vec)
+        return torch.cat([item_id_vec, item_content_vec], dim=-1)
 
     def encode_user(self, user_id, hist_item, hist_len):
         """
@@ -35,20 +76,24 @@ class TorchYoutubeDNN(nn.Module):
         """
         user_emb = self.user_embedding(user_id)  # [B, D]
         hist_emb = self.hist_embedding(hist_item)  # [B, L, D]
+        if self.use_item_content:
+            hist_content_emb = self.item_content_embedding(hist_item)
+            hist_content_emb = self.content_proj(hist_content_emb)
+            hist_emb = torch.cat([hist_emb, hist_content_emb], dim=-1)
 
         mask = (hist_item != 0).float().unsqueeze(-1)  # [B, L, 1]
         # 进行平均
-        hist_sum = (hist_emb * mask).sum(dim=1)        # [B, D]
+        hist_sum = (hist_emb * mask).sum(dim=1)        # [B, D_item]
         denom = hist_len.clamp(min=1).float().unsqueeze(-1)
-        hist_mean = hist_sum / denom                   # [B, D]
+        hist_mean = hist_sum / denom                   # [B, D_item]
 
-        user_input = torch.cat([user_emb, hist_mean], dim=-1)  # [B, 2D]
+        user_input = torch.cat([user_emb, hist_mean], dim=-1)  # [B, D_user + D_item]
         user_vec = self.user_mlp(user_input)                   # [B, D_last]
         user_vec = F.normalize(user_vec, p=2, dim=-1)
         return user_vec
 
     def encode_item(self, item_id):
-        item_vec = self.item_embedding(item_id)
+        item_vec = self._encode_item_features(item_id)
         item_vec = F.normalize(item_vec, p=2, dim=-1)
         return item_vec
 
