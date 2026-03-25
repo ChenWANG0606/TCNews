@@ -4,6 +4,7 @@ from collections import defaultdict
 from tqdm import tqdm
 import pickle
 import random
+from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 # debug模式：从训练集中划出一部分数据来调试代码

@@ -1,5 +1,5 @@
 import math
-from utils.data_utils import get_user_item_time
+from utils.data_utils import get_user_item_time, get_item_user_time_dict
 from collections import defaultdict
 from tqdm import tqdm
 import pickle
@@ -92,9 +92,9 @@ def item_based_recommend(user_id, user_item_time_dict, i2i_sim, sim_item_topk, r
     # 不足10个，用热门商品补全
     if len(item_rank) < recall_item_num:
         for i, item in enumerate(item_topk_click):
-            if item in item_rank.items(): # 填充的item应该不在原来的列表中
+            if item in item_rank:
                 continue
-            item_rank[item] = - i - 100 # 随便给个负数就行
+            item_rank[item] = - i - 100
             if len(item_rank) == recall_item_num:
                 break
     
@@ -102,7 +102,7 @@ def item_based_recommend(user_id, user_item_time_dict, i2i_sim, sim_item_topk, r
         
     return item_rank
 
-def usercf_sim(all_click_df, user_activate_degree_dict):
+def usercf_sim(all_click_df, user_activate_degree_dict, save_path):
     """
         用户相似性矩阵计算
         :param all_click_df: 数据表
@@ -186,9 +186,9 @@ def user_based_recommend(user_id, user_item_time_dict, u2u_sim, sim_user_topk, r
     # 热度补全
     if len(items_rank) < recall_item_num:
         for i, item in enumerate(item_topk_click):
-            if item in items_rank.items(): # 填充的item应该不在原来的列表中
+            if item in items_rank:
                 continue
-            items_rank[item] = - i - 100 # 随便给个复数就行
+            items_rank[item] = - i - 100
             if len(items_rank) == recall_item_num:
                 break
         

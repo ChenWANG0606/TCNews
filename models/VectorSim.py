@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import faiss
 import pickle
+import collections
+from tqdm import tqdm
 # 向量检索相似度计算
 # topk指的是每个item, faiss搜索后返回最相似的topk个item
 def embdding_sim(click_df, item_emb_df, save_path, topk):
