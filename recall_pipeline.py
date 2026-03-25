@@ -15,7 +15,6 @@ from models.DNN import TorchYoutubeDNN, YoutubeDNNTrainer, u2u_embdding_sim
 from models.VectorSim import embdding_sim
 from utils.submit_utils import submit
 from utils.data_utils import (
-    bucketize_words_count,
     gen_data_set,
     gen_model_input,
     get_all_click_sample,
@@ -208,22 +207,21 @@ def run_embedding_recall(click_df, item_created_time_dict, item_emb_df, save_pat
     return emb_i2i_sim, user_recall_items_dict
 
 
-def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, words_bucket_num=20, epochs=10):
+def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, epochs=10):
     log_step(
         "Running YoutubeDNN u2i recall: "
-        f"topk={topk}, seq_len={seq_len}, words_bucket_num={words_bucket_num}, epochs={epochs}"
+        f"topk={topk}, seq_len={seq_len}, epochs={epochs}"
     )
     data = data.merge(
-        item_info_df[["click_article_id", "category_id", "words_count"]],
+        item_info_df[["click_article_id", "category_id"]],
         how="left",
         on="click_article_id",
     ).copy()
-    data["words_count"] = bucketize_words_count(data["words_count"], bucket_num=words_bucket_num)
 
     raw_user_profile = data[["user_id"]].drop_duplicates("user_id").copy()
     raw_item_profile = data[["click_article_id"]].drop_duplicates("click_article_id").copy()
 
-    features = ["click_article_id", "user_id", "category_id", "words_count"]
+    features = ["click_article_id", "user_id", "category_id"]
     feature_max_idx = {}
     encoders = {}
     for feature in features:
@@ -233,7 +231,7 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, word
         encoders[feature] = encoder
 
     user_profile = data[["user_id"]].drop_duplicates("user_id").copy()
-    item_profile = data[["click_article_id", "category_id", "words_count"]].drop_duplicates("click_article_id").copy()
+    item_profile = data[["click_article_id", "category_id"]].drop_duplicates("click_article_id").copy()
 
     user_index_2_rawid = dict(zip(user_profile["user_id"], raw_user_profile["user_id"]))
     item_index_2_rawid = dict(zip(item_profile["click_article_id"], raw_item_profile["click_article_id"]))
@@ -250,13 +248,10 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, word
 
     item_feat_dict = {
         "category_id": dict(zip(item_profile["click_article_id"], item_profile["category_id"])),
-        "words_count": dict(zip(item_profile["click_article_id"], item_profile["words_count"])),
     }
     item_vocab_size = feature_max_idx["click_article_id"]
     item_category_map = np.zeros(item_vocab_size, dtype=np.int64)
-    item_words_map = np.zeros(item_vocab_size, dtype=np.int64)
     item_category_map[item_profile["click_article_id"].values] = item_profile["category_id"].values
-    item_words_map[item_profile["click_article_id"].values] = item_profile["words_count"].values
 
     train_set, test_set = gen_data_set(data, 0)
     log_step(f"YoutubeDNN samples ready: train={len(train_set)}, test={len(test_set)}")
@@ -273,7 +268,6 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, word
         item_hidden_units=(128, embedding_dim),
         padding_idx=0,
         category_num=feature_max_idx["category_id"],
-        words_num=feature_max_idx["words_count"],
     ).to(device)
 
     trainer = YoutubeDNNTrainer(
@@ -285,7 +279,6 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, word
         num_sampled=64,
         all_item_ids=item_profile["click_article_id"].values,
         item_category_map=item_category_map,
-        item_words_map=item_words_map,
     )
     log_step(f"YoutubeDNN training started on device={device}")
     trainer.fit(train_model_input, train_label, validation_split=0.0, verbose=1)
@@ -294,11 +287,9 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, word
     user_embs = trainer.get_user_embedding(test_model_input)
     all_item_ids = item_profile["click_article_id"].values
     all_item_categories = item_profile["category_id"].values
-    all_item_words = item_profile["words_count"].values
     item_embs = trainer.get_item_embedding(
         all_item_ids,
         item_category_ids=all_item_categories,
-        item_words_ids=all_item_words,
     )
 
     user_embs = user_embs / np.linalg.norm(user_embs, axis=1, keepdims=True)
