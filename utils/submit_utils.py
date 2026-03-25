@@ -1,6 +1,6 @@
 import pandas as pd
 # 生成提交文件
-def submit(recall_df, topk=5, save_path, model_name=None):
+def submit(recall_df, topk=5, save_path = './', model_name=None):
     recall_df = recall_df.sort_values(by=['user_id', 'pred_score'])
     recall_df['rank'] = recall_df.groupby(['user_id'])['pred_score'].rank(ascending=False, method='first')
     

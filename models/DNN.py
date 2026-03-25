@@ -158,3 +158,39 @@ class YoutubeDNNTrainer:
             topk
         )
         return sim, idx
+
+
+# 使用Embedding的方式获取u2u的相似性矩阵
+# topk指的是每个user, faiss搜索后返回最相似的topk个user
+def u2u_embdding_sim(click_df, user_emb_dict, save_path, topk):
+    
+    user_list = []
+    user_emb_list = []
+    for user_id, user_emb in user_emb_dict.items():
+        user_list.append(user_id)
+        user_emb_list.append(user_emb)
+        
+    user_index_2_rawid_dict = {k: v for k, v in zip(range(len(user_list)), user_list)}    
+    
+    user_emb_np = np.array(user_emb_list, dtype=np.float32)
+    
+    # 建立faiss索引
+    user_index = faiss.IndexFlatIP(user_emb_np.shape[1])
+    user_index.add(user_emb_np)
+    # 相似度查询，给每个索引位置上的向量返回topk个item以及相似度
+    sim, idx = user_index.search(user_emb_np, topk) # 返回的是列表
+   
+    # 将向量检索的结果保存成原始id的对应关系
+    user_sim_dict = collections.defaultdict(dict)
+    for target_idx, sim_value_list, rele_idx_list in tqdm(zip(range(len(user_emb_np)), sim, idx)):
+        target_raw_id = user_index_2_rawid_dict[target_idx]
+        # 从1开始是为了去掉商品本身, 所以最终获得的相似商品只有topk-1
+        for rele_idx, sim_value in zip(rele_idx_list[1:], sim_value_list[1:]): 
+            if rele_idx == -1:
+                continue
+            rele_raw_id = user_index_2_rawid_dict[rele_idx]
+            user_sim_dict[target_raw_id][rele_raw_id] = user_sim_dict.get(target_raw_id, {}).get(rele_raw_id, 0) + sim_value
+    
+    # 保存i2i相似度矩阵
+    pickle.dump(user_sim_dict, open(save_path + 'youtube_u2u_sim.pkl', 'wb'))   
+    return user_sim_dict
