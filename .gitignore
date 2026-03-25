@@ -39,4 +39,5 @@ dist/
 # =========================
 tcdata/
 temp_results/
-
+*.pkl
+*.csv
