@@ -160,6 +160,31 @@ def get_item_emb_dict(data_path, save_path):
     
     return item_emb_dict
 
+
+def build_youtubednn_item_content_matrix(item_id_encoder, data_path):
+    item_emb_df = pd.read_csv(data_path + 'articles_emb.csv')
+    item_emb_cols = [col for col in item_emb_df.columns if 'emb' in col]
+
+    item_emb_np = np.ascontiguousarray(item_emb_df[item_emb_cols].values, dtype=np.float32)
+    item_emb_np = item_emb_np / np.clip(
+        np.linalg.norm(item_emb_np, axis=1, keepdims=True),
+        a_min=1e-12,
+        a_max=None
+    )
+
+    item_content_dim = item_emb_np.shape[1]
+    item_content_matrix = np.zeros(
+        (len(item_id_encoder.classes_) + 1, item_content_dim),
+        dtype=np.float32
+    )
+
+    rawid_to_emb = dict(zip(item_emb_df['article_id'].values, item_emb_np))
+    for raw_item_id, encoded_item_id in zip(item_id_encoder.classes_, item_id_encoder.transform(item_id_encoder.classes_) + 1):
+        if raw_item_id in rawid_to_emb:
+            item_content_matrix[encoded_item_id] = rawid_to_emb[raw_item_id]
+
+    return item_content_matrix
+
 def get_user_activate_degree_dict(all_click_df):
     all_click_df_ = all_click_df.groupby('user_id')['click_article_id'].count().reset_index()
     
