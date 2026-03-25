@@ -123,16 +123,82 @@ class YoutubeDNNTrainer:
         device,
         batch_size=256,
         lr=1e-3,
-        epochs=1
+        epochs=1,
+        num_sampled=64,
+        all_item_ids=None,
+        item_category_map=None,
+        item_words_map=None,
+        temperature=20.0,
     ):
         self.model = model
         self.device = device
         self.batch_size = batch_size
         self.epochs = epochs
+        self.num_sampled = num_sampled
+        self.temperature = temperature
 
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        if all_item_ids is None:
+            raise ValueError("all_item_ids 不能为空，sampled softmax 需要全量 item 池")
 
-    def fit(self, train_model_input):
+        self.all_item_ids = torch.as_tensor(all_item_ids, dtype=torch.long, device=device)
+        self.item_category_map = (
+            torch.as_tensor(item_category_map, dtype=torch.long, device=device)
+            if item_category_map is not None else None
+        )
+        self.item_words_map = (
+            torch.as_tensor(item_words_map, dtype=torch.long, device=device)
+            if item_words_map is not None else None
+        )
+
+    def _lookup_item_features(self, item_ids):
+        item_category = self.item_category_map[item_ids] if self.item_category_map is not None else None
+        item_words = self.item_words_map[item_ids] if self.item_words_map is not None else None
+        return item_category, item_words
+
+    def _sample_negative_items(self, positive_item_ids):
+        candidate_item_ids = self.all_item_ids
+        if positive_item_ids.numel() > 0:
+            positive_set = torch.unique(positive_item_ids)
+            candidate_mask = ~torch.isin(candidate_item_ids, positive_set)
+            filtered_item_ids = candidate_item_ids[candidate_mask]
+            if filtered_item_ids.numel() > 0:
+                candidate_item_ids = filtered_item_ids
+
+        sample_size = min(self.num_sampled, int(candidate_item_ids.numel()))
+        sampled_perm = torch.randperm(candidate_item_ids.numel(), device=self.device)[:sample_size]
+        return candidate_item_ids[sampled_perm]
+
+    def _sampled_softmax_loss(self, user_vec, positive_item_ids, positive_category_ids=None, positive_words_ids=None):
+        positive_item_vec = self.model.encode_item(
+            positive_item_ids,
+            positive_category_ids,
+            positive_words_ids,
+        )
+        positive_logits = (user_vec * positive_item_vec).sum(dim=1, keepdim=True)
+
+        negative_item_ids = self._sample_negative_items(positive_item_ids)
+        negative_category_ids, negative_words_ids = self._lookup_item_features(negative_item_ids)
+        negative_item_vec = self.model.encode_item(
+            negative_item_ids,
+            negative_category_ids,
+            negative_words_ids,
+        )
+
+        negative_logits = torch.matmul(user_vec, negative_item_vec.t())
+        sampling_prob = torch.full(
+            negative_logits.shape,
+            1.0 / float(self.all_item_ids.numel()),
+            dtype=user_vec.dtype,
+            device=self.device,
+        )
+        negative_logits = negative_logits - torch.log(sampling_prob)
+
+        logits = torch.cat([positive_logits, negative_logits], dim=1) * self.temperature
+        labels = torch.zeros(logits.size(0), dtype=torch.long, device=self.device)
+        return F.cross_entropy(logits, labels)
+
+    def fit(self, train_model_input, train_label=None, validation_split=0.0, verbose=1):
         self.model.train()
 
         user_id = torch.LongTensor(train_model_input["user_id"])
@@ -167,22 +233,20 @@ class YoutubeDNNTrainer:
                 batch_hist_category = hist_category[idx].to(self.device) if hist_category is not None else None
                 batch_hist_words = hist_words[idx].to(self.device) if hist_words is not None else None
 
-                user_vec, item_vec = self.model(
+                user_vec = self.model.encode_user(
                     batch_user,
                     batch_hist,
                     batch_hist_len,
-                    batch_item,
                     batch_hist_category,
                     batch_hist_words,
-                    batch_item_category,
-                    batch_item_words
                 )
 
-                # in-batch negative
-                logits = torch.matmul(user_vec, item_vec.t()) * 20.0
-                labels = torch.arange(logits.size(0), device=self.device)
-
-                loss = F.cross_entropy(logits, labels)
+                loss = self._sampled_softmax_loss(
+                    user_vec,
+                    batch_item,
+                    batch_item_category,
+                    batch_item_words,
+                )
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -190,7 +254,8 @@ class YoutubeDNNTrainer:
 
                 total_loss += loss.item()
 
-            print(f"[Trainer] epoch {epoch+1} loss: {total_loss:.4f}")
+            if verbose:
+                print(f"[Trainer] epoch {epoch+1} loss: {total_loss:.4f}")
 
     def get_user_embedding(self, test_model_input):
         self.model.eval()

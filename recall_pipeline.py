@@ -252,10 +252,15 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, word
         "category_id": dict(zip(item_profile["click_article_id"], item_profile["category_id"])),
         "words_count": dict(zip(item_profile["click_article_id"], item_profile["words_count"])),
     }
+    item_vocab_size = feature_max_idx["click_article_id"]
+    item_category_map = np.zeros(item_vocab_size, dtype=np.int64)
+    item_words_map = np.zeros(item_vocab_size, dtype=np.int64)
+    item_category_map[item_profile["click_article_id"].values] = item_profile["category_id"].values
+    item_words_map[item_profile["click_article_id"].values] = item_profile["words_count"].values
 
     train_set, test_set = gen_data_set(data, 0)
     log_step(f"YoutubeDNN samples ready: train={len(train_set)}, test={len(test_set)}")
-    train_model_input, _ = gen_model_input(train_set, user_profile, seq_len, item_feat_dict=item_feat_dict)
+    train_model_input, train_label = gen_model_input(train_set, user_profile, seq_len, item_feat_dict=item_feat_dict)
     test_model_input, _ = gen_model_input(test_set, user_profile, seq_len, item_feat_dict=item_feat_dict)
 
     embedding_dim = 16
@@ -271,9 +276,19 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, word
         words_num=feature_max_idx["words_count"],
     ).to(device)
 
-    trainer = YoutubeDNNTrainer(model, device, batch_size=512, lr=1e-3, epochs=epochs)
+    trainer = YoutubeDNNTrainer(
+        model,
+        device,
+        batch_size=512,
+        lr=1e-3,
+        epochs=epochs,
+        num_sampled=64,
+        all_item_ids=item_profile["click_article_id"].values,
+        item_category_map=item_category_map,
+        item_words_map=item_words_map,
+    )
     log_step(f"YoutubeDNN training started on device={device}")
-    trainer.fit(train_model_input)
+    trainer.fit(train_model_input, train_label, validation_split=0.0, verbose=1)
 
     log_step("Extracting YoutubeDNN embeddings")
     user_embs = trainer.get_user_embedding(test_model_input)
