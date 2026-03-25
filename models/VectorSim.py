@@ -3,7 +3,7 @@ import numpy as np
 import faiss
 import pickle
 import collections
-from tqdm import tqdm
+from utils.tqdm_utils import tqdm
 # 向量检索相似度计算
 # topk指的是每个item, faiss搜索后返回最相似的topk个item
 def embdding_sim(click_df, item_emb_df, save_path, topk):
@@ -34,7 +34,11 @@ def embdding_sim(click_df, item_emb_df, save_path, topk):
     
     # 将向量检索的结果保存成原始id的对应关系
     item_sim_dict = collections.defaultdict(dict)
-    for target_idx, sim_value_list, rele_idx_list in tqdm(zip(range(len(item_emb_np)), sim, idx)):
+    for target_idx, sim_value_list, rele_idx_list in tqdm(
+        zip(range(len(item_emb_np)), sim, idx),
+        total=len(item_emb_np),
+        desc="embedding_sim_matrix",
+    ):
         target_raw_id = item_idx_2_rawid_dict[target_idx]
         # 从1开始是为了去掉商品本身, 所以最终获得的相似商品只有topk-1
         for rele_idx, sim_value in zip(rele_idx_list[1:], sim_value_list[1:]): 

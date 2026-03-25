@@ -1,7 +1,7 @@
 import math
 from utils.data_utils import get_user_item_time, get_item_user_time_dict
 from collections import defaultdict
-from tqdm import tqdm
+from utils.tqdm_utils import tqdm
 import pickle
 
 
@@ -20,7 +20,7 @@ def itemcf_sim(df, item_created_time_dict, save_path):
     # 计算物品相似度
     i2i_sim = {}
     item_cnt = defaultdict(int)
-    for user, item_time_list in tqdm(user_item_time_dict.items()):
+    for user, item_time_list in tqdm(user_item_time_dict.items(), total=len(user_item_time_dict), desc='itemcf_sim'):
         # 在基于商品的协同过滤优化的时候可以考虑时间因素
         for loc1, (i, i_click_time) in enumerate(item_time_list):
             item_cnt[i] += 1
@@ -115,7 +115,7 @@ def usercf_sim(all_click_df, user_activate_degree_dict, save_path):
     
     u2u_sim = {}
     user_cnt = defaultdict(int)
-    for item, user_time_list in tqdm(item_user_time_dict.items()):
+    for item, user_time_list in tqdm(item_user_time_dict.items(), total=len(item_user_time_dict), desc='usercf_sim'):
         for u, click_time in user_time_list:
             user_cnt[u] += 1
             u2u_sim.setdefault(u, {})

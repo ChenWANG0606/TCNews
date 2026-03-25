@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from collections import defaultdict
-from tqdm import tqdm
+from utils.tqdm_utils import tqdm
 import pickle
 import random
 from sklearn.preprocessing import MinMaxScaler
@@ -192,7 +192,8 @@ def gen_data_set(data, negsample=0):
 
     train_set = []
     test_set = []
-    for reviewerID, hist in tqdm(data.groupby('user_id')):
+    grouped = data.groupby('user_id')
+    for reviewerID, hist in tqdm(grouped, total=grouped.ngroups, desc='gen_data_set'):
         pos_list = hist['click_article_id'].tolist()
         
         if negsample > 0:

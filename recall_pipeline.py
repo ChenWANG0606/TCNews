@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.preprocessing import LabelEncoder
-from tqdm import tqdm
+from utils.tqdm_utils import tqdm
 
 from metrics import metrics_recall
 from models.CF import item_based_recommend, itemcf_sim, user_based_recommend

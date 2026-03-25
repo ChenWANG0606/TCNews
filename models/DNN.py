@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import faiss
 import collections
 import pickle
-from tqdm import tqdm
+from utils.tqdm_utils import tqdm
 import numpy as np
 import pandas as pd
 class TorchYoutubeDNN(nn.Module):
@@ -150,8 +150,11 @@ class YoutubeDNNTrainer:
             permutation = torch.randperm(num_samples)
             total_loss = 0.0
 
-            for i in tqdm(range(0, num_samples, self.batch_size),
-                          desc=f"Epoch {epoch+1}/{self.epochs}"):
+            for i in tqdm(
+                range(0, num_samples, self.batch_size),
+                desc=f"Epoch {epoch+1}/{self.epochs}",
+                total=(num_samples + self.batch_size - 1) // self.batch_size,
+            ):
 
                 idx = permutation[i:i+self.batch_size]
 
@@ -270,7 +273,11 @@ def u2u_embdding_sim(click_df, user_emb_dict, save_path, topk):
    
     # 将向量检索的结果保存成原始id的对应关系
     user_sim_dict = collections.defaultdict(dict)
-    for target_idx, sim_value_list, rele_idx_list in tqdm(zip(range(len(user_emb_np)), sim, idx)):
+    for target_idx, sim_value_list, rele_idx_list in tqdm(
+        zip(range(len(user_emb_np)), sim, idx),
+        total=len(user_emb_np),
+        desc="youtube_u2u_sim",
+    ):
         target_raw_id = user_index_2_rawid_dict[target_idx]
         # 从1开始是为了去掉商品本身, 所以最终获得的相似商品只有topk-1
         for rele_idx, sim_value in zip(rele_idx_list[1:], sim_value_list[1:]): 
