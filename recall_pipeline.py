@@ -212,16 +212,12 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, epoc
         "Running YoutubeDNN u2i recall: "
         f"topk={topk}, seq_len={seq_len}, epochs={epochs}"
     )
-    data = data.merge(
-        item_info_df[["click_article_id", "category_id"]],
-        how="left",
-        on="click_article_id",
-    ).copy()
+    data = data.copy()
 
     raw_user_profile = data[["user_id"]].drop_duplicates("user_id").copy()
     raw_item_profile = data[["click_article_id"]].drop_duplicates("click_article_id").copy()
 
-    features = ["click_article_id", "user_id", "category_id"]
+    features = ["click_article_id", "user_id"]
     feature_max_idx = {}
     encoders = {}
     for feature in features:
@@ -231,7 +227,7 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, epoc
         encoders[feature] = encoder
 
     user_profile = data[["user_id"]].drop_duplicates("user_id").copy()
-    item_profile = data[["click_article_id", "category_id"]].drop_duplicates("click_article_id").copy()
+    item_profile = data[["click_article_id"]].drop_duplicates("click_article_id").copy()
 
     user_index_2_rawid = dict(zip(user_profile["user_id"], raw_user_profile["user_id"]))
     item_index_2_rawid = dict(zip(item_profile["click_article_id"], raw_item_profile["click_article_id"]))
@@ -246,17 +242,10 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, epoc
         for _, row in user_raw_hist.iterrows()
     }
 
-    item_feat_dict = {
-        "category_id": dict(zip(item_profile["click_article_id"], item_profile["category_id"])),
-    }
-    item_vocab_size = feature_max_idx["click_article_id"]
-    item_category_map = np.zeros(item_vocab_size, dtype=np.int64)
-    item_category_map[item_profile["click_article_id"].values] = item_profile["category_id"].values
-
     train_set, test_set = gen_data_set(data, 0)
     log_step(f"YoutubeDNN samples ready: train={len(train_set)}, test={len(test_set)}")
-    train_model_input, train_label = gen_model_input(train_set, user_profile, seq_len, item_feat_dict=item_feat_dict)
-    test_model_input, _ = gen_model_input(test_set, user_profile, seq_len, item_feat_dict=item_feat_dict)
+    train_model_input, train_label = gen_model_input(train_set, user_profile, seq_len)
+    test_model_input, _ = gen_model_input(test_set, user_profile, seq_len)
 
     embedding_dim = 16
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -267,7 +256,6 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, epoc
         hidden_units=(128, embedding_dim),
         item_hidden_units=(128, embedding_dim),
         padding_idx=0,
-        category_num=feature_max_idx["category_id"],
     ).to(device)
 
     trainer = YoutubeDNNTrainer(
@@ -278,7 +266,6 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, epoc
         epochs=epochs,
         num_sampled=64,
         all_item_ids=item_profile["click_article_id"].values,
-        item_category_map=item_category_map,
     )
     log_step(f"YoutubeDNN training started on device={device}")
     trainer.fit(train_model_input, train_label, validation_split=0.0, verbose=1)
@@ -286,11 +273,7 @@ def youtubednn_u2i_dict(data, item_info_df, save_path, topk=20, seq_len=30, epoc
     log_step("Extracting YoutubeDNN embeddings")
     user_embs = trainer.get_user_embedding(test_model_input)
     all_item_ids = item_profile["click_article_id"].values
-    all_item_categories = item_profile["category_id"].values
-    item_embs = trainer.get_item_embedding(
-        all_item_ids,
-        item_category_ids=all_item_categories,
-    )
+    item_embs = trainer.get_item_embedding(all_item_ids)
 
     user_embs = user_embs / np.linalg.norm(user_embs, axis=1, keepdims=True)
     item_embs = item_embs / np.linalg.norm(item_embs, axis=1, keepdims=True)

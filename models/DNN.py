@@ -20,23 +20,15 @@ class TorchYoutubeDNN(nn.Module):
         embedding_dim=16,
         hidden_units=(64, 16),
         padding_idx=0,
-        category_num=None,
         item_hidden_units=None
     ):
         super().__init__()
         self.embedding_dim = embedding_dim
-        self.use_category = category_num is not None
 
         self.user_embedding = nn.Embedding(user_num, embedding_dim)
         self.item_embedding = nn.Embedding(item_num, embedding_dim, padding_idx=padding_idx)
-        if self.use_category:
-            self.category_embedding = nn.Embedding(category_num, embedding_dim, padding_idx=padding_idx)
-        else:
-            self.category_embedding = None
 
         self.item_input_dim = embedding_dim
-        if self.use_category:
-            self.item_input_dim += embedding_dim
 
         item_hidden_units = item_hidden_units or hidden_units
         item_layers = []
@@ -55,22 +47,17 @@ class TorchYoutubeDNN(nn.Module):
             input_dim = h
         self.user_mlp = nn.Sequential(*layers)
 
-    def _build_item_features(self, item_id, category_id=None):
-        item_features = [self.item_embedding(item_id)]
-        if self.use_category:
-            if category_id is None:
-                raise ValueError("category_id 不能为空")
-            item_features.append(self.category_embedding(category_id))
-        return torch.cat(item_features, dim=-1)
+    def _build_item_features(self, item_id):
+        return self.item_embedding(item_id)
 
-    def encode_user(self, user_id, hist_item, hist_len, hist_category=None):
+    def encode_user(self, user_id, hist_item, hist_len):
         """
         user_id: [B]
         hist_item: [B, L]
         hist_len: [B]
         """
         user_emb = self.user_embedding(user_id)  # [B, D]
-        hist_emb = self._build_item_features(hist_item, hist_category)  # [B, L, D_item]
+        hist_emb = self._build_item_features(hist_item)  # [B, L, D_item]
 
         mask = (hist_item != 0).float().unsqueeze(-1)  # [B, L, 1]
         # 进行平均
@@ -83,8 +70,8 @@ class TorchYoutubeDNN(nn.Module):
         user_vec = F.normalize(user_vec, p=2, dim=-1)
         return user_vec
 
-    def encode_item(self, item_id, category_id=None):
-        item_input = self._build_item_features(item_id, category_id)
+    def encode_item(self, item_id):
+        item_input = self._build_item_features(item_id)
         item_vec = self.item_mlp(item_input)
         item_vec = F.normalize(item_vec, p=2, dim=-1)
         return item_vec
@@ -95,11 +82,9 @@ class TorchYoutubeDNN(nn.Module):
         hist_item,
         hist_len,
         target_item,
-        hist_category=None,
-        target_category=None,
     ):
-        user_vec = self.encode_user(user_id, hist_item, hist_len, hist_category)
-        item_vec = self.encode_item(target_item, target_category)
+        user_vec = self.encode_user(user_id, hist_item, hist_len)
+        item_vec = self.encode_item(target_item)
         return user_vec, item_vec
 
 class YoutubeDNNTrainer:
@@ -112,7 +97,6 @@ class YoutubeDNNTrainer:
         epochs=1,
         num_sampled=64,
         all_item_ids=None,
-        item_category_map=None,
         temperature=20.0,
     ):
         self.model = model
@@ -127,14 +111,6 @@ class YoutubeDNNTrainer:
             raise ValueError("all_item_ids 不能为空，sampled softmax 需要全量 item 池")
 
         self.all_item_ids = torch.as_tensor(all_item_ids, dtype=torch.long, device=device)
-        self.item_category_map = (
-            torch.as_tensor(item_category_map, dtype=torch.long, device=device)
-            if item_category_map is not None else None
-        )
-
-    def _lookup_item_features(self, item_ids):
-        item_category = self.item_category_map[item_ids] if self.item_category_map is not None else None
-        return item_category
 
     def _sample_negative_items(self, positive_item_ids):
         candidate_item_ids = self.all_item_ids
@@ -149,19 +125,12 @@ class YoutubeDNNTrainer:
         sampled_perm = torch.randperm(candidate_item_ids.numel(), device=self.device)[:sample_size]
         return candidate_item_ids[sampled_perm]
 
-    def _sampled_softmax_loss(self, user_vec, positive_item_ids, positive_category_ids=None):
-        positive_item_vec = self.model.encode_item(
-            positive_item_ids,
-            positive_category_ids,
-        )
+    def _sampled_softmax_loss(self, user_vec, positive_item_ids):
+        positive_item_vec = self.model.encode_item(positive_item_ids)
         positive_logits = (user_vec * positive_item_vec).sum(dim=1, keepdim=True)
 
         negative_item_ids = self._sample_negative_items(positive_item_ids)
-        negative_category_ids = self._lookup_item_features(negative_item_ids)
-        negative_item_vec = self.model.encode_item(
-            negative_item_ids,
-            negative_category_ids,
-        )
+        negative_item_vec = self.model.encode_item(negative_item_ids)
 
         negative_logits = torch.matmul(user_vec, negative_item_vec.t())
         sampling_prob = torch.full(
@@ -183,8 +152,6 @@ class YoutubeDNNTrainer:
         item_id = torch.LongTensor(train_model_input["click_article_id"])
         hist_id = torch.LongTensor(train_model_input["hist_article_id"])
         hist_len = torch.LongTensor(train_model_input["hist_len"])
-        item_category = torch.LongTensor(train_model_input["item_category_id"]) if "item_category_id" in train_model_input else None
-        hist_category = torch.LongTensor(train_model_input["hist_category_id"]) if "hist_category_id" in train_model_input else None
 
         num_samples = len(user_id)
 
@@ -204,20 +171,16 @@ class YoutubeDNNTrainer:
                 batch_item = item_id[idx].to(self.device)
                 batch_hist = hist_id[idx].to(self.device)
                 batch_hist_len = hist_len[idx].to(self.device)
-                batch_item_category = item_category[idx].to(self.device) if item_category is not None else None
-                batch_hist_category = hist_category[idx].to(self.device) if hist_category is not None else None
 
                 user_vec = self.model.encode_user(
                     batch_user,
                     batch_hist,
                     batch_hist_len,
-                    batch_hist_category,
                 )
 
                 loss = self._sampled_softmax_loss(
                     user_vec,
                     batch_item,
-                    batch_item_category,
                 )
 
                 self.optimizer.zero_grad()
@@ -235,7 +198,6 @@ class YoutubeDNNTrainer:
         user_id = torch.LongTensor(test_model_input["user_id"]).to(self.device)
         hist_id = torch.LongTensor(test_model_input["hist_article_id"]).to(self.device)
         hist_len = torch.LongTensor(test_model_input["hist_len"]).to(self.device)
-        hist_category = torch.LongTensor(test_model_input["hist_category_id"]).to(self.device) if "hist_category_id" in test_model_input else None
 
         user_embs = []
 
@@ -244,30 +206,26 @@ class YoutubeDNNTrainer:
                 batch_user = user_id[i:i+2**12]
                 batch_hist = hist_id[i:i+2**12]
                 batch_hist_len = hist_len[i:i+2**12]
-                batch_hist_category = hist_category[i:i+2**12] if hist_category is not None else None
 
                 emb = self.model.encode_user(
                     batch_user,
                     batch_hist,
                     batch_hist_len,
-                    batch_hist_category,
                 )
                 user_embs.append(emb.cpu().numpy())
 
         return np.vstack(user_embs)
 
-    def get_item_embedding(self, item_ids, item_category_ids=None):
+    def get_item_embedding(self, item_ids):
         self.model.eval()
 
         item_ids = torch.LongTensor(item_ids).to(self.device)
-        item_category_ids = torch.LongTensor(item_category_ids).to(self.device) if item_category_ids is not None else None
         item_embs = []
 
         with torch.no_grad():
             for i in range(0, len(item_ids), 2**12):
                 batch_item = item_ids[i:i+2**12]
-                batch_item_category = item_category_ids[i:i+2**12] if item_category_ids is not None else None
-                emb = self.model.encode_item(batch_item, batch_item_category)
+                emb = self.model.encode_item(batch_item)
                 item_embs.append(emb.cpu().numpy())
 
         return np.vstack(item_embs)
